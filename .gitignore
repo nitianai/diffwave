@@ -1,0 +1,10 @@
+__pycache__/
+DUMMY1/
+DUMMY2/
+DUMMY3/
+filelist/
+ldm_chpt/
+stft_check/
+lightning_logs/
+model_weights/
+src/
