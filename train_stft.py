@@ -11,7 +11,7 @@ from module.stftVQVAE import VQVAE
 class AudioVQVAE_lightning(pl.LightningModule):
     def __init__(self):
         super().__init__()
-        self.vqvae = VQVAE(320*4)
+        self.vqvae = VQVAE(n_fft=320*4)
 
     def slice(self, wav, lengths, crop):
         wavs = []
@@ -36,7 +36,7 @@ class AudioVQVAE_lightning(pl.LightningModule):
         texts, sid, wav, wav_lengths, _, _, ssl, lengths, _, latent, _=batch
         B, C, L = wav.shape
         # mask = torch.arange(L).expand(B, L) < wav_lengths.unsqueeze(1)
-        wav = self.slice(wav, wav_lengths, 48000).squeeze(1)
+        wav = self.slice(wav, wav_lengths, 24000).squeeze(1)
 
         wav, loss, ids = self.vqvae(wav, wav)
 
@@ -53,6 +53,15 @@ class AudioVQVAE_lightning(pl.LightningModule):
         self.vqvae.codebook_usage.zero_()
         return loss
 
+    def on_load_checkpoint(self, checkpoint):
+        for param in self.vqvae.parameters():
+            param.requires_grad = False
+        for param in self.vqvae.decoder.atten.parameters():
+            param.requires_grad = True
+        for param in self.vqvae.style.parameters():
+            param.requires_grad = True
+        pass
+        
     def on_train_epoch_start(self):
         with open('learn_rate/lr_stft_vqvae.txt') as file:
             lr = file.readline()
@@ -71,6 +80,7 @@ class AudioVQVAE_lightning(pl.LightningModule):
         _wav, _, _ = self.vqvae(wav, wav)
         torchaudio.save('1.wav', wav.squeeze(1).cpu(), sr)
         torchaudio.save('2.wav', _wav.squeeze(1).cpu(), sr)
+        torch.save(self.vqvae.state_dict(),'model_weights/context_encoder.pth')
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
@@ -81,7 +91,7 @@ if __name__ == "__main__":
     dataset = AudioFeatureDataset('filelist/vctk_audio_sid_text_train_filelist.txt')
     dataloader = torch.utils.data.DataLoader(
         dataset=dataset, 
-        batch_size=32, 
+        batch_size=16, 
         shuffle=True, 
         num_workers=8,
         collate_fn=collate_fn)
@@ -109,5 +119,5 @@ if __name__ == "__main__":
     trainer.fit(
         model=model, 
         train_dataloaders=dataloader, 
-        #ckpt_path='vqvae_check/model-style-relu-epoch=0059.ckpt'
+        ckpt_path='stft_check/model-epoch=0024.ckpt'
     )

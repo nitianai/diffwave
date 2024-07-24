@@ -48,7 +48,7 @@ class HEncLayer(nn.Module):
     def __init__(self, in_channels=2, out_channels=48, Activer=nn.Identity()):
         super().__init__()
         self.out_channels = out_channels
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=(8, 8), stride=(2, 2), padding=(3, 3))
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=(8, 3), stride=(4, 1), padding=(2, 1))
         self.norm1 = Activer
         self.rewrite = nn.Conv2d(out_channels, out_channels * 2, kernel_size=(1, 1), stride=(1, 1))
         self.norm2 = Activer
@@ -61,17 +61,17 @@ class HEncLayer(nn.Module):
         x = self.norm2(x)
         x = F.glu(x, dim=1)
         B, C, Fq, T = x.shape
-        # # 转换数据形状以匹配Conv1d的输入要求
-        # x = x.permute(0, 2, 1, 3).reshape(-1, C, T)
-        # x = self.dconv(x)
-        # x = x.view(B, Fq, C, T).permute(0, 2, 1, 3)
+        # 转换数据形状以匹配Conv1d的输入要求
+        x = x.permute(0, 2, 1, 3).reshape(-1, C, T)
+        x = self.dconv(x)
+        x = x.view(B, Fq, C, T).permute(0, 2, 1, 3)
 
         return x
 
 class StyleEncLayer(nn.Module):
     def __init__(self, in_channels=2, out_channels=48, Activer=nn.Identity()):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=(8, 8), stride=(2, 2), padding=(3, 3))
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=(8, 3), stride=(4, 1), padding=(2, 1))
         self.norm1 = Activer
         self.rewrite = nn.Conv2d(out_channels, out_channels * 2, kernel_size=(1, 1), stride=(1, 1))
         self.norm2 = Activer
@@ -89,9 +89,9 @@ class StyleEncLayer(nn.Module):
 class HDecLayer(nn.Module):
     def __init__(self, in_channels, out_channels, Activer=nn.Identity()):
         super().__init__()
-        self.conv_t = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=(8, 8), stride=(2, 2), padding=(3, 3))
+        self.conv_t = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=(8, 3), stride=(4, 1), padding=(2, 1))
         self.norm2 = Activer
-        self.rewrite = nn.Conv2d(in_channels, in_channels * 2, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.rewrite = nn.Conv2d(in_channels, in_channels * 2, kernel_size=(1, 1), stride=(1, 1))
         self.norm1 = Activer
 
     def forward(self, x):

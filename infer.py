@@ -44,12 +44,12 @@ def put_noise2latent(latent, t):
 
 if __name__=="__main__":
 
-    model = AudioVQVAE_lightning.load_from_checkpoint('stft_check/model-epoch=0049.ckpt')
+    model = AudioVQVAE_lightning.load_from_checkpoint('stft_check/model-epoch=0019.ckpt')
     wav_a, sr = torchaudio.load('DUMMY2/wav/p227_019.wav')
     wav_b, sr = torchaudio.load('DUMMY2/wav/p230_413.wav')
 
-    wav = model.vqvae.exchange(wav_a.to(model.device), wav_b.to(model.device))
-    
+    wav, _, _ = model.vqvae(wav_b.to(model.device), wav_b.to(model.device))
+
     torchaudio.save('3.wav', wav.cpu(), sr)
     
     latent = torch.randn(10, 256, 100)

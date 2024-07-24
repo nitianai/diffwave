@@ -56,96 +56,105 @@ class Residual_Atten(nn.Module):
     
     def forward(self, q, k, v):
         y, _ = self.atten(query=q,key=k, value=v)
-        return q + y
+        return y
 
 class ContentEncoder(nn.Module):
-    def __init__(self, channels, Activer):
+    def __init__(self, out_channels, Activer):
         super().__init__()
-        self.dowmSample = nn.Sequential(
+        self.downSample = nn.Sequential(
             HEncLayer(in_channels=2, out_channels=48),
             HEncLayer(in_channels=48, out_channels=96)
         )
         self.vector_quantizer = ResidualVQ(
-            dim=96,
+            dim=out_channels,
             num_quantizers=1,
-            codebook_size=2048,
+            codebook_size=1024,
             commitment_weight=0.01,
             kmeans_init=True,
             ema_update=True,
-        )     
+        )   
+    
 
     def forward(self, x):
-        y = self.dowmSample(x)
+        y = self.downSample(x).contiguous()  
         B, C, Fr, T = y.shape
+        beforvq = y
 
-        y = y.permute(0, 2, 3, 1).contiguous()
-        y = y.view(B, Fr * T, C)
+        y = y.view(B, C, Fr*T).transpose(1, 2)
         latent, indices, commit_loss = self.vector_quantizer(y)
-        # latent = y
-        latent = latent.view(B, Fr, T, C).permute(0, 3, 1, 2)
-        return latent, indices, commit_loss
+        latent = latent.transpose(1, 2).view(B, C, Fr, T)
+        return latent, indices, beforvq
 
 class Decoder(nn.Module):
-    def __init__(self, channels, Activer):
+    def __init__(self, in_channels, Activer):
         super().__init__()  
-        self.up1 = HDecLayer(in_channels=96, out_channels=48)
-        self.up2 = HDecLayer(in_channels=48, out_channels=2)
-        self.atten = Residual_Atten(96)
+        self.upSample = nn.Sequential(
+            HDecLayer(in_channels=96, out_channels=48),
+            HDecLayer(in_channels=48, out_channels=2)
+        )
+        self.atten = Residual_Atten(192)
+        self.proj = nn.Linear(192, 96)
+
     
     def forward(self, latent, style):
         B, C, Fr, T = latent.shape
-        style = style.transpose(1, 2)
-        
-        latent = latent.view(B, C, Fr*T).transpose(1, 2)
-        latent = self.atten(latent, style, style).transpose(1, 2)
-        latent = latent.view(B, C, Fr, T)
+        style = style.expand(B, C, Fr, T)
+        mix = latent
+        mix = torch.cat((latent, style), dim=1)
+        mix = mix.view(B, 192, Fr*T).transpose(1, 2)
 
-        x = self.up1(latent)
-        x = self.up2(x)
+        mix = self.atten(mix, mix, mix)
+        mix = self.proj(mix)
+        mix = mix.view(B, Fr, T, C)
+        mix = mix.permute(0, 3, 1, 2)
+    
+        x = self.upSample(mix)
 
-        return x
+        return x, mix
 
 class StyleEncoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.proj = nn.Sequential(
-            HEncLayer(in_channels=2,out_channels=48),
-            HEncLayer(in_channels=48,out_channels=96)
+        self.downSample = nn.Sequential(
+            HEncLayer(in_channels=2, out_channels=48),
+            HEncLayer(in_channels=48, out_channels=96)
         )
-        self.encoder=MelStyleEncoder(
-            n_mel_channels=96,
-            style_hidden=128,
-            style_vector_dim=96
-        )
+        self.gru = nn.GRU(input_size=96 * 40, hidden_size=96 * 40, batch_first=True)
     
     def forward(self, stft):
-        style = self.proj(stft).contiguous()
+        style = self.downSample(stft).contiguous()
         B, C, Fr, T = style.shape
-        style = style.view(B, C, Fr*T)
-        style = self.encoder(style)
+        style = style.view(B, C*Fr, T)
+        style = style.transpose(1, 2)
+        _, style = self.gru(style)
+        style = style.permute(1, 2, 0)
+        style = style.view(B, C, Fr, 1)
+        
         return style
 
 class VQVAE(nn.Module):
     def __init__(self, n_fft):
         super().__init__()
-        self.n_fft = n_fft
-        self.channels = n_fft // 2
 
-        self.proj_out = nn.Conv2d(2, 2, 3, 1, 1)
-        self.STFT = STFTProcessor(320, 1280)
+        self.STFT = STFTProcessor(n_fft // 4, nfft=n_fft)
 
-        self.context = ContentEncoder(self.channels, nn.Identity())
+        self.context = ContentEncoder(96, nn.Identity())
         self.style = StyleEncoder()
 
-        self.decoder = Decoder(self.channels, nn.LeakyReLU(0.1))
+        self.decoder = Decoder(96, nn.LeakyReLU(0.1))
         self.register_buffer('codebook_usage', torch.zeros(2048, dtype=torch.int32))
 
     def forward(self, wav_context, wav_style):
         # 处理Style
         wav_style = pad_to_multiple(wav_style, 1280).unsqueeze(1)
-        stft_style = self.STFT._spec(wav_style)
-        stft_style = self.STFT._magnitude(stft_style)
-        style = self.style(stft_style)
+        stft = self.STFT._spec(wav_style)
+        stft = self.STFT._magnitude(stft)
+        x = stft
+        mean = x.mean(dim=(1, 2, 3), keepdim=True)
+        std = x.std(dim=(1, 2, 3), keepdim=True)
+        x = (x - mean) / (1e-5 + std)
+        style = self.style(x)
+
         # 处理Context
         wav_context = pad_to_multiple(wav_context, 1280).unsqueeze(1)
         B, C, L = wav_context.shape
@@ -156,11 +165,12 @@ class VQVAE(nn.Module):
         std = x.std(dim=(1, 2, 3), keepdim=True)
         x = (x - mean) / (1e-5 + std)
 
-        latent, indices, commit_loss = self.context(x)
+        latent, indices, beforvq = self.context(x)
         
-        _stft = self.decoder(latent, style)
-        _stft = self.proj_out(_stft)
-        loss = F.mse_loss(stft, _stft)
+        # _stft, mix = self.decoder(beforvq, style)
+        # loss = F.mse_loss(stft, _stft)
+        _stft, mix = self.decoder(latent, style)
+        loss = F.mse_loss(beforvq, mix)
 
         _stft = self.STFT._imagnitude(_stft)
         wav = self.STFT._ispec(_stft, L)
